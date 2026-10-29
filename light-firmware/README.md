@@ -1,10 +1,11 @@
 # Gluer light controller (Waveshare ESP32-S3-Relay-6CH)
 
-1. Install **Arduino IDE 2**.
-2. Boards Manager: install **esp32 by Espressif Systems**, version **2.0.12** (the version Waveshare's page uses).
-3. Library Manager: install **WebSockets** (Markus Sattler) and **ArduinoJson** (Benoit Blanchon, version 7).
-4. Open `gluer_light/gluer_light.ino`, edit the three lines at the top (Wi-Fi name, Wi-Fi password, light code from the app).
-5. Tools: Board = **ESP32S3 Dev Module**, **USB CDC On Boot = Enabled**, pick the board's COM port.
-6. If it will not connect: hold **BOOT**, tap **RESET**, release BOOT, then upload.
+The firmware is already compiled and tested to build. Wi-Fi details are NOT typed into the code:
 
-The board's small RGB LED: blue = no Wi-Fi, yellow = Wi-Fi but the light service is not reached, green = connected.
+1. Load the program onto the board over USB-C (Claude can do this from the PC with arduino-cli:
+   board `esp32:esp32:esp32s3:CDCOnBoot=cdc`, core esp32 2.0.17, libraries WebSockets + ArduinoJson).
+2. Power the board. It opens its own Wi-Fi **GluerLight-Setup**. Join it from a phone, open `192.168.4.1`,
+   type the Wi-Fi name, password and the light code (app: Settings -> Alert light), tap Save.
+3. The board restarts and joins your 2.4 GHz Wi-Fi. To set it up again, hold **BOOT** while powering it on.
+
+Board LED: purple blink = setup mode, blue = no Wi-Fi, yellow = Wi-Fi but no light service, green = connected.

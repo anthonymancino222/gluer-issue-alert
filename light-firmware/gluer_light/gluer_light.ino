@@ -16,12 +16,17 @@
 #include <WiFi.h>
 #include <WebSocketsClient.h>   // library "WebSockets" by Markus Sattler
 #include <ArduinoJson.h>        // library "ArduinoJson" by Benoit Blanchon (version 7)
+#include <Preferences.h>
+#include <WebServer.h>
+#include <DNSServer.h>
 
-// ====== EDIT THESE THREE LINES ======================================================================
-const char* WIFI_SSID     = "YOUR_WIFI_NAME";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* LIGHT_CODE    = "YOURLIGHTCODE";      // the code shown in the app: Settings -> Alert light
-// ====================================================================================================
+// Wi-Fi name, Wi-Fi password and light code are NOT typed in here. On first start (or when BOOT is held while
+// powering on) the board opens its own Wi-Fi "GluerLight-Setup" and a setup page where you type them from a phone.
+String WIFI_SSID, WIFI_PASSWORD, LIGHT_CODE;
+Preferences prefs;
+WebServer web(80);
+DNSServer dns;
+const uint8_t BOOT_PIN = 0;
 
 const char* HOST = "gluer-issue-sync.anthony-mancino2.workers.dev";
 
@@ -78,10 +83,46 @@ void onEvent(WStype_t type, uint8_t* payload, size_t length) {
   }
 }
 
+/* ---------- first-time setup page (phone) ---------- */
+String pageHtml(const String& note) {
+  String opts; int n = WiFi.scanNetworks();
+  for (int i = 0; i < n && i < 20; i++) opts += "<option value='" + WiFi.SSID(i) + "'>";
+  return String("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><title>Gluer light setup</title>"
+    "<body style='font-family:sans-serif;max-width:420px;margin:20px auto;padding:0 14px'>"
+    "<h2>Gluer light setup</h2>") + note +
+    "<form method=POST action=/save>"
+    "<p>Wi-Fi name<br><input name=s list=n style='width:100%;font-size:18px;padding:8px' required></p><datalist id=n>" + opts + "</datalist>"
+    "<p>Wi-Fi password<br><input name=p type=text style='width:100%;font-size:18px;padding:8px'></p>"
+    "<p>Light code (from the app: Settings, Alert light)<br><input name=c style='width:100%;font-size:18px;padding:8px;text-transform:uppercase' required></p>"
+    "<p><button style='font-size:20px;padding:12px 24px'>Save</button></p></form>"
+    "<p style='color:#555'>2.4 GHz Wi-Fi only.</p></body>";
+}
+void runSetupPortal() {
+  Serial.println("setup mode: join Wi-Fi GluerLight-Setup");
+  WiFi.mode(WIFI_AP); WiFi.softAP("GluerLight-Setup");
+  dns.start(53, "*", WiFi.softAPIP());
+  web.on("/save", HTTP_POST, []() {
+    String s = web.arg("s"), p = web.arg("p"), c = web.arg("c");
+    c.trim(); c.toLowerCase(); String clean; for (char ch : c) if (isalnum(ch)) clean += ch;
+    if (s.length() == 0 || clean.length() < 8) { web.send(200, "text/html", pageHtml("<p style='color:#b00'>Please fill in the Wi-Fi name and a light code of at least 8 letters/numbers.</p>")); return; }
+    prefs.begin("gluer", false); prefs.putString("ssid", s); prefs.putString("pass", p); prefs.putString("code", clean); prefs.end();
+    web.send(200, "text/html", "<meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:sans-serif;margin:30px'><h2>Saved</h2><p>The board is restarting and will join your Wi-Fi. You can close this page.</p></body>");
+    delay(1500); ESP.restart();
+  });
+  web.onNotFound([]() { web.send(200, "text/html", pageHtml("")); });
+  web.begin();
+  while (true) { dns.processNextRequest(); web.handleClient(); neopixelWrite(RGB_PIN, 30, 0, (millis() / 500) % 2 ? 30 : 0); delay(5); }   // purple blink = setup mode
+}
+
 void setup() {
   Serial.begin(115200);
   for (int i = 0; i < 6; i++) { pinMode(RELAY_PIN[i], OUTPUT); digitalWrite(RELAY_PIN[i], LOW); }   // everything off until the service says otherwise
-  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  pinMode(BOOT_PIN, INPUT_PULLUP);
+  prefs.begin("gluer", true); WIFI_SSID = prefs.getString("ssid", ""); WIFI_PASSWORD = prefs.getString("pass", ""); LIGHT_CODE = prefs.getString("code", ""); prefs.end();
+  bool wantSetup = WIFI_SSID.length() == 0 || LIGHT_CODE.length() == 0;
+  if (!wantSetup) { unsigned long t = millis(); while (millis() - t < 2500) { if (digitalRead(BOOT_PIN) == HIGH) break; delay(20); } wantSetup = digitalRead(BOOT_PIN) == LOW; }   // hold BOOT while powering on = set up again
+  if (wantSetup) runSetupPortal();
+  WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true); WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
   Serial.print("Wi-Fi");
   while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); neopixelWrite(RGB_PIN, 0, 0, (millis() / 400) % 2 ? 40 : 0); }
   Serial.println(" connected: " + WiFi.localIP().toString());
