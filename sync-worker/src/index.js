@@ -111,13 +111,24 @@ export class Hub extends DurableObject {
 
 /* ---------- the lobby: tablets that want to be paired wait here ----------
    Each waiting tablet gets a random 4-digit code (only that tablet and its owner see it).
-   Another tablet picks it from the list and types the code. If it matches, the hub invents a
-   private room name and hands it to both; they then sync through the normal Hub above.
+   Another tablet picks it from the list and types the code. Existing rooms are retained:
+   the selected device's room wins, then the joiner's, otherwise a new room is created.
    Nothing is stored: the lobby lives only while tablets are connected. */
 const rnd = n => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; };
 const code4 = () => String(rnd(10000)).padStart(4, '0');
 const rid = () => { const a = new Uint8Array(12); crypto.getRandomValues(a); return [...a].map(b => b.toString(16).padStart(2, '0')).join(''); };
 const clean = s => String(s || '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 20) || 'Tablet';
+const roomOf = x => typeof x === 'string' && /^[a-z0-9_-]{3,40}$/.test(x) ? x : '';
+const lightOf = x => {
+  if (!x || x.on !== true || typeof x.code !== 'string' || !/^[a-z0-9]{8,24}$/.test(x.code)) return null;
+  const map = {};
+  for (const colour of ['red', 'yellow', 'blue', 'green']) {
+    const ch = x.map && x.map[colour];
+    if (!Number.isInteger(ch) || ch < 0 || ch > 6) return null;
+    map[colour] = ch;
+  }
+  return { on: true, code: x.code, map };
+};
 
 const FRESH = 40000;   // a tablet that sends heartbeats drops out of the list after this long without one
 
@@ -158,12 +169,12 @@ export class Lobby extends DurableObject {
         const b = x.deserializeAttachment();
         if (b && b.cid === cid) { try { x.close(4001, 'replaced'); } catch (e) {} }
       }
-      a = { id: rid().slice(0, 10), name: clean(m.name), code: code4(), fails: 0, tries: 0, cid, hb: false, seen: Date.now() };
+      a = { id: rid().slice(0, 10), name: clean(m.name), code: code4(), fails: 0, tries: 0, cid, hb: false, seen: Date.now(), room: roomOf(m.room), light: lightOf(m.light) };
       ws.serializeAttachment(a);
       this.send(ws, { t: 'you', id: a.id, code: a.code });
       for (const [k, v] of await this.ctx.storage.list({ prefix: 'p:' })) if (Date.now() - v.at > 300000) await this.ctx.storage.delete(k);
       const p = await this.pendingFor(cid);
-      if (p) this.send(ws, { t: 'paired', room: p.room, peer: p.peer });
+      if (p) this.send(ws, { t: 'paired', room: p.room, peer: p.peer, pv: p.pv, light: p.light });
       this.broadcast();
     } else if (!a) {
       return;
@@ -187,11 +198,18 @@ export class Lobby extends DurableObject {
         tgt.w.serializeAttachment(tgt.a);
         return this.send(ws, { t: 'err', e: 'code' });
       }
-      const room = rid(), at = Date.now();
-      if (tgt.a.cid) await this.ctx.storage.put('p:' + tgt.a.cid, { room, peer: a.name, at });
-      if (a.cid) await this.ctx.storage.put('p:' + a.cid, { room, peer: tgt.a.name, at });
-      this.send(tgt.w, { t: 'paired', room, peer: a.name });
-      this.send(ws, { t: 'paired', room, peer: tgt.a.name });
+      // Room and light credentials are shared only after the selected device's PIN is verified.
+      // Do not publish either secret in list()/broadcast().
+      const room = roomOf(tgt.a.room) || roomOf(a.room) || rid(), at = Date.now();
+      const light = lightOf(tgt.a.light) || lightOf(a.light);
+      a.room = tgt.a.room = room;
+      a.light = tgt.a.light = light;
+      ws.serializeAttachment(a); tgt.w.serializeAttachment(tgt.a);
+      const pairing = { room, light, pv: 2, at };
+      if (tgt.a.cid) await this.ctx.storage.put('p:' + tgt.a.cid, { ...pairing, peer: a.name });
+      if (a.cid) await this.ctx.storage.put('p:' + a.cid, { ...pairing, peer: tgt.a.name });
+      this.send(tgt.w, { t: 'paired', ...pairing, peer: a.name });
+      this.send(ws, { t: 'paired', ...pairing, peer: tgt.a.name });
     }
   }
   async webSocketClose(ws, code) { try { ws.close(code, 'bye'); } catch (e) {} this.broadcast(); }

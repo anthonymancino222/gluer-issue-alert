@@ -734,7 +734,7 @@ textarea::placeholder{color:rgba(255,255,255,.55)}
 </defs></svg>
 
 <script>
-const APP_VERSION = '5.16.0';
+const APP_VERSION = '5.16.1';
 const STORE_KEY = 'gluerIssueAlert.v1';
 
 /* ---------- text: [English, Spanish, Burmese] ---------- */
@@ -1407,7 +1407,7 @@ document.addEventListener('click', e => {
     case 'kbset': case 'kbclear': case 'kbtoggle': case 'kbhints': case 'kbsuggest': case 'kbsuggestgo': case 'kbclearask': case 'kbclearall': KB.act(act, id); break;
     case 'lobbypick': Sync.lobbyPick(b.dataset.id); break;
     case 'lobbyjoin': Sync.lobbyJoin(); break;
-    case 'changetab': Sync.unpair(); break;
+    case 'adddevice': Sync.addDevice(); break;
     case 'hexp': { const sc = document.querySelector('.hist'); const top = sc ? sc.scrollTop : 0; view.exp = view.exp || {}; view.exp[id] = !view.exp[id]; render(); const sc2 = document.querySelector('.hist'); if (sc2) sc2.scrollTop = top; break; }
     case 'history': view = {name:'history', exp:{}, f:{u:'all', t:'all', d:''}, g:{}}; render(); break;
     case 'fu': { view.f = view.f || {u:'all', t:'all', d:''}; view.f.u = b.dataset.v; render(); break; }
@@ -1459,7 +1459,7 @@ Sync = (() => {
   if (qs.get('sync')) put('gluer.syncurl', qs.get('sync'));
   if (qs.get('room')) put('gluer.room', qs.get('room'));
   const cfg = () => ({ url: get('gluer.syncurl') || DEFAULT_SYNC_URL, room: get('gluer.room') || '', peer: get('gluer.peer') || '' });
-  let ws = null, state = 'off', online = 0, tries = 0, timer = null, pingT = null, pongT = null, dirty = false, offset = 0, helloAt = 0;
+  let ws = null, state = 'off', online = 0, tries = 0, timer = null, pingT = null, pongT = null, dirty = false, offset = 0, helloAt = 0, ready = false;
   const realNow = Date.now.bind(Date);
   Date.now = () => realNow() + offset;                       // keep every tablet on the hub's clock so timestamps agree
   const strip = i => { const { v, vc, ...r } = i; return JSON.stringify(r); };
@@ -1479,8 +1479,8 @@ Sync = (() => {
   const send = o => sendRaw(JSON.stringify(o));
   const label = () => !cfg().room ? 'LINK' : state === 'on' ? String(online) : state === 'wait' ? '…' : 'OFF';
   const status = () => !cfg().room ? 'Not linked to another tablet yet.' : state === 'on' ? (online >= 2
-      ? pk(['Connected · ' + online + ' devices online', 'Conectado · ' + online + ' dispositivos en línea', 'ချိတ်ဆက်ပြီး · စက် ' + online + ' လုံး အွန်လိုင်း'])
-      : pk(['Linked, but the other device is NOT connected yet. Open the app on it, or tap CHANGE TABLET to link again.', 'Vinculado, pero el otro dispositivo AÚN NO está conectado. Abra la app en él, o toque CAMBIAR TABLET para vincular de nuevo.', 'ချိတ်ဆက်ထားသော်လည်း အခြားစက် မချိတ်ဆက်သေးပါ။ ၎င်းတွင် အက်ပ်ကို ဖွင့်ပါ၊ သို့မဟုတ် CHANGE TABLET ကိုနှိပ်၍ ပြန်ချိတ်ပါ။']))
+      ? pk(['Connected · ' + online + ' connections online', 'Conectado · ' + online + ' conexiones en línea', 'ချိတ်ဆက်မှု ' + online + ' ခု အွန်လိုင်း'])
+      : pk(['This group is saved. Open the app on another device, or choose ADD DEVICE to invite it without replacing this group.', 'Este grupo está guardado. Abra la app en otro dispositivo o use AÑADIR DISPOSITIVO para invitarlo sin reemplazar el grupo.', 'ဤအဖွဲ့ကို သိမ်းထားသည်။ အခြားစက်တွင် အက်ပ်ဖွင့်ပါ၊ သို့မဟုတ် ADD DEVICE ကို နှိပ်ပါ။']))
     : state === 'wait' ? 'Connecting…' : 'Offline. Changes are saved here and will sync when the connection returns.';
   function ui() {
     document.querySelectorAll('.sync').forEach(b => { b.dataset.s = (state === 'on' && online < 2) ? 'alone' : state; const t = b.querySelector('.stx'); if (t) t.textContent = label(); });
@@ -1506,17 +1506,21 @@ Sync = (() => {
       if (!l) { issues.push(r); snap[r.id] = strip(r); changed = true; }
       else if (newer(r, l)) { Object.keys(l).forEach(k => delete l[k]); Object.assign(l, r); snap[r.id] = strip(r); changed = true; }
     }
-    if (changed) { persist(); soft(); }
+    if (changed) {
+      persist(); soft();
+      // Hardware must follow synced issues even while Settings or a dialog delays rendering.
+      if (typeof Light !== 'undefined' && Light) Light.apply();
+    }
   }
   function cleanup() {
     clearInterval(pingT); clearTimeout(pongT);
     if (ws) { ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
-    state = 'off'; online = 0; ui();
+    state = 'off'; online = 0; ready = false; ui();
   }
   function schedule() { clearTimeout(timer); timer = setTimeout(connect, Math.min(1000 * Math.pow(2, tries++), 10000)); }
   function connect() {
     clearTimeout(timer); if (ws) return;
-    const c = cfg(); if (!c.room) { state = 'off'; ui(); return; } state = 'wait'; ui();
+    const c = cfg(); if (!c.room) { state = 'off'; ui(); return; } ready = false; state = 'wait'; ui();
     let sock;
     try { sock = new WebSocket(c.url + '?room=' + encodeURIComponent(c.room) + '&c=' + cid); } catch (e) { state = 'off'; ui(); schedule(); return; }
     ws = sock;
@@ -1533,6 +1537,10 @@ Sync = (() => {
       if (m.t === 'snap' && m.done && m.now) { const rtt = realNow() - helloAt; offset = (m.now + rtt / 2) - realNow(); }
       if (m.n != null) { online = m.n; ui(); }
       if (m.t === 'snap' || m.t === 'up') merge(m.issues || []);
+      if (m.t === 'snap' && m.done) {
+        ready = true;
+        if (typeof Light !== 'undefined' && Light) Light.apply();
+      }
       if (m.a) clearAcked(m.a);
       if (m.seq != null) setSeq(m.seq);
     };
@@ -1578,7 +1586,7 @@ Sync = (() => {
     let w; try { w = new WebSocket(cfg().url.replace(/\/ws$/, '/lobby')); } catch (e) { L.retry = setTimeout(lobbyConnect, 2000); return; }
     L.ws = w;
     w.onopen = () => {
-      lsend({ t: 'enter', name: myName(), c: cid }); lsend({ t: 'hb' });
+      lsend({ t: 'enter', name: myName(), c: cid, room: cfg().room, light: Light ? Light.pairing() : null }); lsend({ t: 'hb' });
       clearInterval(L.ping); L.ping = setInterval(() => { try { w.send('ping'); lsend({ t: 'hb' }); } catch (e) {} }, 12000);   // heartbeat: a dead window drops off the list fast
     };
     w.onmessage = ev => {
@@ -1596,7 +1604,20 @@ Sync = (() => {
       }
       else if (m.t === 'paired') {
         lsend({ t: 'ok' });
+        // A cached/old Worker must never silently replace an established hardware room.
+        if (cfg().room && m.pv !== 2) {
+          setErr('The sync service needs an update before adding devices. Your existing group has been kept.');
+          return;
+        }
+        if (typeof m.room !== 'string' || !/^[a-z0-9_-]{3,40}$/.test(m.room)) { setErr('Invalid group received. Your existing group has been kept.'); return; }
+        ready = false;
         put('gluer.room', m.room); put('gluer.peer', m.peer); markAll();
+        const address = new URL(location.href);
+        if (address.searchParams.has('room')) {
+          address.searchParams.set('room', m.room);
+          history.replaceState(null, '', address.pathname + address.search + address.hash);
+        }
+        if (m.pv === 2 && Light) Light.acceptPairing(m.light);
         const peer = m.peer;
         closeModal(); cleanup(); tries = 0; connect();
         toastL(['Linking with ' + peer + '…', 'Vinculando con ' + peer + '…', peer + ' နှင့် ချိတ်ဆက်နေသည်…']);
@@ -1641,8 +1662,9 @@ Sync = (() => {
       modal(lg(state === 'on' && online < 2 ? ['Waiting for the other device','Esperando al otro dispositivo','အခြားစက်ကို စောင့်နေသည်'] : ['Tablets are linked','Tablets conectadas','တက်ဘလက်များ ချိတ်ဆက်ပြီး'], 'xl c') + '<div class="sub" id="syncstat">' + status() + '</div>'
         + (c.peer ? '<div class="rlab">Linked with <b>' + esc(c.peer) + '</b></div>' : '')
         + '<div class="rlab">Link ID: <b>' + esc(c.room.slice(0, 4).toUpperCase()) + '</b> · same on both devices</div>'
+        + '<div class="rlab">This counts browser connections, not confirmed tower controllers.</div>'
         + '<div class="mrow"><div class="cell"><button class="bb mbtn g-teal" data-act="closemodal"><span class="bi">' + lg(['CLOSE','CERRAR','ပိတ်မည်'], 'c') + '</span></button></div>'
-        + '<div class="cell"><button class="bb mbtn f-orange" data-act="changetab"><span class="bi">' + lg(['CHANGE TABLET','CAMBIAR TABLET','တက်ဘလက် ပြောင်းမည်'], 'c') + '</span></button></div></div>');
+        + '<div class="cell"><button class="bb mbtn f-orange" data-act="adddevice"><span class="bi">' + lg(['ADD DEVICE','AÑADIR DISPOSITIVO','စက် ထပ်ထည့်မည်'], 'c') + '</span></button></div></div>');
       return;
     }
     lobbyOpenUi();
@@ -1668,21 +1690,21 @@ Sync = (() => {
   }
   function lobbyModal() {
     modal(lg(['Connect tablets','Conectar tablets','တက်ဘလက်များ ချိတ်ဆက်ရန်'], 'xl c')
+      + '<div class="rlab">On the new device, select the device that already controls the tower and enter its code. Its existing group and enabled light settings will be kept. Closing this screen does not disconnect your current group.</div>'
+      + (cfg().room ? '<div class="rlab">Current group: <b>' + esc(cfg().room.slice(0, 4).toUpperCase()) + '</b>. Selecting a device in another group moves this device to that group.</div>' : '')
       + '<div class="lbname"><span class="rlab">This tablet is called</span><input id="tabname" class="rin sm" value="' + esc(myName()) + '" maxlength="20" autocomplete="off" spellcheck="false"></div>'
       + '<div id="lbcode" class="lbcode"></div><div id="lblist" class="lblist"></div><div id="lbsel" class="lbsel"></div><div id="lberr" class="lberr"></div>'
       + '<div class="mrow sm"><div class="cell"><button class="bb mbtn g-teal" data-act="closemodal"><span class="bi">' + lg(['CLOSE','CERRAR','ပိတ်မည်'], 'c') + '</span></button></div>'
       + '<div class="cell"><button id="lbgo" class="bb mbtn f-green lbgo" data-act="lobbyjoin" disabled><span class="bi">' + lg(['CONNECT','CONECTAR','ချိတ်ဆက်မည်'], 'c') + '</span></button></div></div>');
     rCode(); rList(); rSel();
   }
-  function unpair() {
-    put('gluer.room', ''); put('gluer.peer', ''); clearTimeout(timer); cleanup(); lobbyOpenUi();
-  }
+  function addDevice() { lobbyOpenUi(); }
 
   return {
     afterSave, cfg, status, label, ui,
-    state: () => state, online: () => online,
+    state: () => state, online: () => online, ready: () => ready,
     flush: () => { if (dirty) soft(); },
-    open, lobbyClose, lobbyPick, lobbyJoin, unpair, relang
+    open, lobbyClose, lobbyPick, lobbyJoin, addDevice, relang
   };
 })();
 
@@ -1855,7 +1877,8 @@ Light = (() => {
       : { c: 'green', m: 'steady', a: chOf('green'), b: [] };
   };
   const send = o => { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(o)); return true; } catch (e) {} } return false; };
-  const push = w => send({ t: 'set', a: w.a, b: w.b, m: w.m });
+  const synced = () => !Sync || !Sync.cfg().room || Sync.ready();
+  const push = (w, force = false) => (force || synced()) && send({ t: 'set', a: w.a, b: w.b, m: w.m });
   const statEl = () => { document.querySelectorAll('.lightlink').forEach(e => { e.textContent = linkText(); e.dataset.s = !st.on ? 'off' : !linkOk ? 'wait' : devN > 0 ? 'ok' : 'warn'; }); };
   const linkText = () => !st.on ? pk(['The light is OFF in this app.', 'La luz está APAGADA en esta app.', 'ဤအက်ပ်တွင် မီး ပိတ်ထားသည်။'])
     : !linkOk ? pk(['Connecting to the light service…', 'Conectando con el servicio de la luz…', 'မီးဝန်ဆောင်မှုသို့ ချိတ်ဆက်နေသည်…'])
@@ -1884,7 +1907,7 @@ Light = (() => {
     const w = want(), key = w.c + ' ' + w.m;
     document.querySelectorAll('.lightprev').forEach(e => { e.dataset.l = key; });
     if (st.on && st.code && !ws && !retry) connect();
-    if (key !== last) { if (push(w) || !st.on) last = key; }
+    if (key !== last) { if (push(w, !!testing) || !st.on) last = key; }
   }
   const rerender = () => { if (view.name === 'settings') { const sc = document.querySelector('.hist'); const top = sc ? sc.scrollTop : 0; render(); const s2 = document.querySelector('.hist'); if (s2) s2.scrollTop = top; } };
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && st.on) { if (!ws) { tries = 0; connect(); } else send({ t: 'hb' }); } });
@@ -1896,7 +1919,19 @@ Light = (() => {
   return {
     state: () => ({ on: st.on, now: want(), connected: linkOk && devN > 0, code: st.code, map: st.map, linkOk, devN }),
     linkText,
-    toggle: () => { st.on = !st.on; if (st.on && !st.code) st.code = mkCode(); persist(); if (st.on) { last = ''; tries = 0; apply(); } else { push({ a: [], b: [], m: 'steady' }); setTimeout(close, 400); last = ''; } rerender(); },
+    pairing: () => st.on && /^[a-z0-9]{8,24}$/.test(st.code) ? { on: true, code: st.code, map: Object.assign({}, st.map) } : null,
+    acceptPairing: s => {
+      if (!s || s.on !== true || typeof s.code !== 'string' || !/^[a-z0-9]{8,24}$/.test(s.code)) return;
+      const map = {};
+      for (const colour of Object.keys(DEF_MAP)) {
+        const ch = s.map && s.map[colour];
+        if (!Number.isInteger(ch) || ch < 0 || ch > 6) return;
+        map[colour] = ch;
+      }
+      close(); st = { on: true, code: s.code, map }; persist(); last = '';
+      // Sync.connect() first obtains the group's current issues before publishing a light state.
+    },
+    toggle: () => { st.on = !st.on; if (st.on && !st.code) st.code = mkCode(); persist(); if (st.on) { last = ''; tries = 0; apply(); } else { push({ a: [], b: [], m: 'steady' }, true); setTimeout(close, 400); last = ''; } rerender(); },
     newCode: () => { st.code = mkCode(); persist(); close(); last = ''; apply(); rerender(); },
     test: c => {
       clearTimeout(tt);

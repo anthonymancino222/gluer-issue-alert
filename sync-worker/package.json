@@ -2,6 +2,6 @@
   "name": "gluer-issue-sync",
   "private": true,
   "version": "1.0.0",
-  "scripts": { "dev": "wrangler dev", "deploy": "wrangler deploy" },
+  "scripts": { "dev": "wrangler dev", "deploy": "wrangler deploy", "test": "node --test test/*.test.cjs" },
   "devDependencies": { "wrangler": "^4" }
 }
